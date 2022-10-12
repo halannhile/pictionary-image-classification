@@ -1,0 +1,212 @@
+---
+title: "Project Random Forest Trial 1"
+author: "Nhi (Chelsea) Le"
+date: "5/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+> Creating the training and test sets
+
+```{r}
+load("data/sketches_test.rda")
+load("data/sketches_train.rda")
+
+library(tidymodels)
+
+set.seed(123) 
+sketches_split <- initial_split(sketches, strata = word) 
+
+sketches_train <- training(sketches_split)
+sketches_test <- testing(sketches_split)
+```
+
+> Creating the recipe: 
+
+```{r}
+sketches_rec <- recipe(word ~ ., data = sketches_train) %>% 
+  update_role(id, new_role = "ID") 
+
+sketches_prep <- prep(sketches_rec)
+juiced <- juice(sketches_prep)
+```
+
+> Creating the tuning specifications
+
+```{r}
+tune_spec <- rand_forest(
+  mtry = tune(), 
+  trees = 1000, 
+  min_n = tune()
+) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger")
+```
+
+> Creating the workflow
+
+```{r}
+tune_wf <- workflow() %>% 
+  add_recipe(sketches_rec) %>% 
+  add_model(tune_spec)
+```
+
+> Creating a set of cross-validation resamples to use for tuning
+
+```{r}
+set.seed(234) 
+sketches_folds <- vfold_cv(sketches_train)
+```
+
+> Training different models to see which ones turn out best. Using parallel processing to fasten things up (since different parts of the grid are independent). Choosing 20 grid points
+
+```{r}
+doParallel::registerDoParallel()
+
+set.seed(345)
+tune_res <- tune_grid(
+  tune_wf, 
+  resamples = sketches_folds, 
+  grid = 20
+)
+
+tune_res
+```
+
+> Looking at min_n and mtry with regard to AUC
+
+```{r}
+library(tidyverse)
+tune_res %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(mean, min_n, mtry) %>% 
+  pivot_longer(min_n:mtry, 
+               values_to = "value", 
+               names_to = "parameter") %>% 
+  ggplot(aes(value, mean, color = parameter)) + 
+  geom_point(show.legend = FALSE, size = 2) + 
+  facet_wrap(~parameter, scales = "free_x") + 
+  labs(x = NULL, y = "AUC")
+```
+> It looks like lower values of mtry are good (below 400) and lower values of min_n are also good (below about 16). We can get a better handle on the hyperparameters by tuning one more time, this time using regular_grid(). Let’s set ranges of hyperparameters we want to try, based on the results from our initial tune. 
+
+> Tuning the hyperparameters one more time using regular_grid(), setting the ranges of the hyperparameters based on the results from initial tune
+
+```{r}
+rf_grid <- grid_regular(
+  mtry(range = c(0,400)), 
+  min_n(range = c(0,16)), 
+  levels = 5
+)
+
+rf_grid
+```
+
+> Tuning one more time in a more targetted way with the rf_grid we've just produced
+
+```{r}
+set.seed(456)
+
+regular_res <- tune_grid(
+  tune_wf, 
+  resamples = sketches_folds, 
+  grid = rf_grid
+)
+
+regular_res
+```
+
+> Looking at the results after this round of tuning
+
+```{r}
+regular_res %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  mutate(min_n = factor(min_n)) %>% 
+  ggplot(aes(mtry, mean, color = min_n)) + 
+  geom_line(alpha = 0.5, size = 1.5) + 
+  geom_point() + 
+  labs(y = "AUC")
+```
+
+> Selecting the best model, and updating our original model specification `tune_spec` to create our final model specification
+
+```{r}
+best_auc <- select_best(regular_res, "roc_auc") 
+
+final_rf <- finalize_model(
+  tune_spec, 
+  best_auc
+)
+
+final_rf
+```
+
+> Exploring the best model
+
+```{r}
+library(vip)
+library(ranger)
+
+set_engine("ranger", importance = "permutation") %>% 
+  fit(word ~ ., 
+      data = juice(sketches_prep) %>% select(-id)) %>% 
+  vip(geom = "point")
+```
+
+> Making a final workflow, then fitting one last time, using `last_fit()`, which fits the model on the entire training set and evaluates on the test set
+
+```{r}
+final_wf <- workflow() %>% 
+  add_recipe(sketches_rec) %>% 
+  add_model(final_rf) 
+
+final_res <- final_wf %>% 
+  last_fit(sketches_split) 
+
+final_res %>% 
+  collect_metrics()
+```
+
+```{r}
+predictions_final_res <- final_res$.predictions %>% 
+  as.data.frame()
+
+write_csv(predictions_final_res, path = "final_res_predictions_on_fake_test_set.csv")
+```
+
+```{r}
+final_res$.workflow
+```
+
+
+```{r}
+load("data/sketches_test.rda")
+
+final_rf
+```
+```{r}
+library(randomForest)
+load("data/sketches_test.rda")
+load("data/sketches_train.rda")
+
+final_res$.workflow
+
+random_forest <- randomForest(word~., data = sketches[,-786], ntree = 1000, mtry = 28, nodesize = 4)
+
+sketches_test$word <- predict(random_forest, newdata=sketches_test)
+predictions_trial <- sketches_test %>%
+  select(id, word) %>%
+  rename(Id=id, Category=word)
+
+write_csv(predictions_trial, path = "predictions_28_05_2020(2).csv")
+```
+
+```{r}
+library(randomForest)
+```
+
