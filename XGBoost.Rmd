@@ -1,0 +1,339 @@
+---
+title: "Project XGB Julia Take 2"
+author: "Nhi (Chelsea) Le"
+date: "5/25/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+
+load("data/sketches_test.rda")
+load("data/sketches_train.rda")
+
+
+tlabels <- as.numeric(as.factor(sketches$word)) - 1
+
+plabels <- levels(as.factor(sketches$word))
+
+sketches <- sketches %>% 
+  mutate(category = factor(tlabels)) %>% 
+  select(-word)
+```
+```{r}
+sketches_split <- initial_split(sketches, strata = category)
+
+sketches_train <- training(sketches_split) 
+
+sketches_test <- testing(sketches_split)
+```
+
+```{r}
+xgb_spec <- boost_tree(
+  trees = 1000, 
+  tree_depth = tune(), 
+  min_n = tune(), 
+  loss_reduction = tune(), 
+  sample_size = tune(), 
+  mtry = tune(), 
+  learn_rate = tune() 
+) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+xgb_spec
+```
+```{r}
+xgb_grid <- grid_latin_hypercube(
+  tree_depth(), 
+  min_n(), 
+  loss_reduction(), 
+  sample_size = sample_prop(), 
+  finalize(mtry(), sketches_train), 
+  learn_rate(), 
+  size = 30
+)
+
+xgb_grid <- xgb_grid %>% as.data.frame()
+typeof(xgb_grid)
+```
+```{r}
+xgb_wf <- workflow() %>% 
+  add_formula(category ~ .) %>% 
+  add_model(xgb_spec)
+
+xgb_wf
+```
+```{r}
+set.seed(123)
+sketches_folds <- vfold_cv(sketches_train, stata = category)
+
+sketches_folds
+```
+
+```{r}
+doParallel::registerDoParallel()
+
+set.seed(234)
+xgb_res <- tune_grid(
+  xgb_wf, 
+  resamples = sketches_folds, 
+  grid = xgb_grid, 
+  control = control_grid(save_pred = TRUE)
+)
+```
+
+```{r}
+collect_metrics(xgb_res) %>% glimpse()
+```
+
+```{r}
+xgb_res %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  select(mean, mtry:sample_size) %>%
+  pivot_longer(mtry:sample_size,
+               values_to = "value",
+               names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(alpha = 0.8, show.legend = FALSE, size = 1) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "AUC")
+```
+
+```{r}
+show_best(xgb_res, "roc_auc") %>% glimpse()
+```
+
+```{r}
+best_auc <- select_best(xgb_res, "roc_auc")
+best_auc
+```
+
+```{r}
+final_xgb <- finalize_workflow(
+  xgb_wf,
+  best_auc
+)
+
+final_xgb
+```
+
+```{r}
+library(vip)
+
+final_xgb_2 <- final_xgb %>%
+  fit(data = sketches_train) %>%
+  pull_workflow_fit() #%>%
+  #vip(geom = "point")
+```
+
+```{r}
+final_res <- last_fit(final_xgb, sketches_split)
+
+collect_metrics(final_res)
+```
+```{r}
+predictions <- final_res %>%
+  collect_predictions()
+
+predictions
+
+write_csv(predictions, path="predictions_26_05_2020.csv")
+```
+
+
+
+```{r}
+final_res %>%
+  collect_predictions() %>%
+  roc_curve(category, .pred_category) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_line(size = 1.5, color = "midnightblue") +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    size = 1.2
+  )
+```
+
+```{r}
+load("data/sketches_test.rda")
+
+final_xgb <- final_xgb %>%
+  fit(data = sketches_train) %>%
+  pull_workflow_fit() 
+
+sketches_test <- sketches_test %>% mutate(category = factor(word)) %>% as.matrix()
+predict(final_xgb, sketches_test)
+```
+
+```{r}
+load("data/sketches_test.rda")
+
+#test_labels <- as.numeric(as.factor(sketches_test$word)) - 1
+
+#sketches_test <- sketches_test %>% 
+#  mutate(category = factor(test_labels)) %>% 
+#  select(-word) %>% 
+
+p_ts_xg <- xgb.DMatrix(data = as.matrix(sketches_test[,-c(785:786)]), 
+                       label =  sketches_test$word) 
+
+predict(final_xgb, p_ts_xg)
+```
+
+```{r}
+load("data/sketches_test.rda")
+
+test_data <- sketches_test
+test_data$id <- NULL
+test_data$category <- NULL
+
+X_test <- xgb.DMatrix(as.matrix(test_data))
+
+prediction_2 <- predict(final_xgb, X_test)
+```
+```{r}
+load("data/sketches_test.rda")
+
+sketches_test <- sketches_test %>% 
+  mutate(category = 0)
+
+
+test <- xgb.DMatrix(
+  as.matrix(sketches_test[,1:784]), 
+  label = sketches_test$category)
+
+prediction_3 <- predict(final_xgb, test)
+```
+> LAST TRIAL: 
+
+```{r}
+library(xgboost)
+library(tidyverse)
+load("data/sketches_test.rda")
+load("data/sketches_train.rda")
+
+tlabels <- as.numeric(as.factor(sketches$word)) - 1
+
+plabels <- levels(as.factor(sketches$word))
+
+sketches <- sketches %>% 
+  mutate(category = tlabels) %>% 
+  select(-word)
+
+sketches_test$word <- rep(c("boomerang", "kangaroo", "flip flops", "cactus", "crab", "banana"), 200)
+
+tlabels_2 <- as.numeric(as.factor(sketches_test$word)) - 1
+
+plabels_2 <- levels(as.factor(sketches_test$word))
+
+sketches_test <- sketches_test %>% 
+  mutate(category = tlabels_2) %>% 
+  select(-word)
+
+p_tr_xg <- xgb.DMatrix(
+  data = as.matrix(sketches[,c(1:784)]), 
+  label = sketches$category)
+
+
+p_ts_xg <- xgb.DMatrix(
+  data = as.matrix(sketches_test[,c(1:784)]), 
+  label = sketches_test$category)
+
+params <- list(booster = "gbtree", 
+               eta=0.00273660655965115, 
+               max_depth = 7,
+               gamma = 0.744431905858796,
+               colsample_bytree = 0.705732484076433,
+               min_child_weight = 35, 
+               subsample = 0.629450988278259
+               )
+
+p_xgb_softmax <- xgb.train(params = params, 
+                   data = p_tr_xg,
+                   nrounds = 1000,
+                   verbose = 0, 
+                   objective = "multi:softmax", 
+                   num_class = 6, 
+                   nthread = 1, 
+                   silent = 1
+                   )
+```
+
+```{r}
+xgbpred_softmax <- predict(p_xgb_softmax, p_ts_xg) 
+
+predictions_softmax <- data.frame(id = c(1:7200), category = xgbpred_softmax)
+
+write_csv(predictions_softmax, path="predictions_26_05_2020(final_multisoftmax_originalcode_2).csv")
+```
+
+```{r}
+library(xgboost)
+library(tidyverse)
+load("data/sketches_test.rda")
+load("data/sketches_train.rda")
+
+tlabels <- as.numeric(as.factor(sketches$word)) - 1
+
+plabels <- levels(as.factor(sketches$word))
+
+sketches <- sketches %>% 
+  mutate(category = tlabels) %>% 
+  select(-word)
+
+sketches_test$word <- rep(c("boomerang", "kangaroo", "flip flops", "cactus", "crab", "banana"), 200)
+
+tlabels_2 <- as.numeric(as.factor(sketches_test$word)) - 1
+
+plabels_2 <- levels(as.factor(sketches_test$word))
+
+sketches_test <- sketches_test %>% 
+  mutate(category = tlabels_2) %>% 
+  select(-word)
+
+p_tr_xg <- xgb.DMatrix(
+  data = as.matrix(sketches[,c(1:784)]), 
+  label = sketches$category)
+
+
+p_ts_xg <- xgb.DMatrix(
+  data = as.matrix(sketches_test[,c(1:784)]), 
+  label = sketches_test$category)
+
+params <- list(booster = "gbtree", 
+               eta=0.00273660655965115, 
+               max_depth = 7,
+               gamma = 0.744431905858796,
+               colsample_bytree = 0.705732484076433,
+               min_child_weight = 35, 
+               subsample = 0.629450988278259
+               )
+
+p_xgb_softprob <- xgb.train(params = params, 
+                   data = p_tr_xg,
+                   nrounds = 1000,
+                   verbose = 0, 
+                   objective = "multi:softprob", 
+                   num_class = 6, 
+                   nthread = 1, 
+                   silent = 1
+                   )
+```
+
+```{r}
+xgbpred_softprob <- predict(p_xgb_softprob, p_ts_xg)
+
+predictions_softprob <- data.frame(id = c(1:1200), category = xgbpred_softprob)
+
+write_csv(predictions_softprob, path="predictions_26_05_2020(final_multisoftprob_originalcode).csv")
+```
+
