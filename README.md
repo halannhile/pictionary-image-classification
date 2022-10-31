@@ -15,3 +15,11 @@ The best performing solution was CNNs
 ## Link to Report 
 
 https://drive.google.com/file/d/16ixifGk9EpleNRpn4dzpcLpX0fuovp9f/view
+
+## Code 
+
+**CNNs**: https://github.com/halannhile/pictionary-image-classification/tree/main/CNNs
+
+**Random Forests**: https://github.com/halannhile/pictionary-image-classification/blob/main/Random%20Forests.Rmd
+
+**XGBoost**: https://github.com/halannhile/pictionary-image-classification/blob/main/XGBoost.Rmd
